@@ -12,12 +12,18 @@ from .safety import apply_safety_guardrails, validate_enums
 logger = logging.getLogger(__name__)
 
 
+def detect_language(text: str) -> str:
+    """Detect Bangla by Unicode block U+0980–U+09FF presence."""
+    bangla_chars = sum(1 for c in text if 'ঀ' <= c <= '৿')
+    return "bn" if bangla_chars > 3 else "en"
+
+
 def build_user_message(req: TicketRequest) -> str:
     parts = [f"TICKET ID: {req.ticket_id}"]
     parts.append(f"COMPLAINT TEXT:\n{req.complaint}")
 
-    if req.language:
-        parts.append(f"LANGUAGE: {req.language}")
+    language = req.language or detect_language(req.complaint)
+    parts.append(f"LANGUAGE: {language}")
     if req.channel:
         parts.append(f"CHANNEL: {req.channel}")
     if req.user_type:
@@ -180,6 +186,22 @@ async def call_llm(user_msg: str) -> dict:
     raise RuntimeError(f"All LLM providers failed. Last error: {last_error}")
 
 
+def enforce_review_rules(result: dict) -> dict:
+    """Post-processing: enforce human_review_required based on case type and verdict."""
+    case_type = result.get("case_type", "")
+    evidence_verdict = result.get("evidence_verdict", "")
+    severity = result.get("severity", "")
+
+    must_review = (
+        case_type in {"wrong_transfer", "duplicate_payment", "agent_cash_in_issue", "phishing_or_social_engineering"}
+        or evidence_verdict == "insufficient_data"
+        or severity == "critical"
+    )
+    if must_review:
+        result["human_review_required"] = True
+    return result
+
+
 async def analyze_ticket(req: TicketRequest) -> dict:
     user_msg = build_user_message(req)
 
@@ -191,6 +213,7 @@ async def analyze_ticket(req: TicketRequest) -> dict:
 
     result["ticket_id"] = req.ticket_id
     result = validate_enums(result)
+    result = enforce_review_rules(result)
 
     if "customer_reply" in result:
         result["customer_reply"] = apply_safety_guardrails(result["customer_reply"])

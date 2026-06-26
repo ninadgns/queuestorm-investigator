@@ -25,6 +25,19 @@ _REFUND_PROMISE_PATTERNS = [
     r'\bguarantee[^.]{0,30}refund\b',
     r'\brefund[^.]{0,30}guarantee\b',
     r'\bdefinitely (refund|return|reverse)\b',
+    r'\bwe will credit your account\b',
+    r'\bfunds? will be (restored|credited|returned|refunded)\b',
+    r'\byou will receive (a |the |your )?(full |partial )?refund\b',
+    r'\byour account will be credited\b',
+    r'\bwe (will|shall) (recover|return|restore)[^.]{0,40}(funds?|money|amount|taka)\b',
+]
+
+# Patterns for unauthorized time commitments
+_TIME_COMMITMENT_PATTERNS = [
+    r'\bwithin \d+[\s\-]*(to[\s\-]*\d+\s*)?(hours?|days?|business days?|working days?)\b',
+    r'\b(by|before)\s+(tomorrow|end of day|eod|midnight)\b',
+    r'\bin the next \d+\s*(hours?|days?)\b',
+    r'\bwithin the (next|coming) \d+\s*(hours?|days?)\b',
 ]
 
 VALID_EVIDENCE_VERDICTS = {"consistent", "inconsistent", "insufficient_data"}
@@ -55,6 +68,14 @@ def _has_refund_promise(text: str) -> bool:
     return False
 
 
+def _has_time_commitment(text: str) -> bool:
+    lower = text.lower()
+    for pattern in _TIME_COMMITMENT_PATTERNS:
+        if re.search(pattern, lower):
+            return True
+    return False
+
+
 def apply_safety_guardrails(customer_reply: str) -> str:
     if _has_credential_request(customer_reply):
         logger.warning("Safety violation: credential request in customer_reply — scrubbing")
@@ -68,9 +89,30 @@ def apply_safety_guardrails(customer_reply: str) -> str:
         logger.warning("Safety violation: unauthorized refund promise in customer_reply — scrubbing")
         customer_reply = re.sub(r'(?i)we will refund( you)?', 'any eligible amount will be returned through official channels', customer_reply)
         customer_reply = re.sub(r'(?i)we will reverse the transaction', 'our team will review the transaction', customer_reply)
-        customer_reply = re.sub(r'(?i)your money will be refunded', 'any eligible amount will be returned through official channels', customer_reply)
-        customer_reply = re.sub(r'(?i)your money will be returned', 'any eligible amount will be returned through official channels', customer_reply)
-        customer_reply = re.sub(r'(?i)you will get your money back', 'any eligible amount will be returned through official channels', customer_reply)
+        customer_reply = re.sub(r'(?i)your money will be (refunded|returned)', 'any eligible amount will be returned through official channels', customer_reply)
+        customer_reply = re.sub(r'(?i)you will (get|receive)[^.]{0,30}back', 'any eligible amount will be returned through official channels', customer_reply)
+        customer_reply = re.sub(r'(?i)we will credit your account', 'our team will process your case through official channels', customer_reply)
+        customer_reply = re.sub(r'(?i)funds? will be (restored|credited|returned|refunded)', 'any eligible amount will be returned through official channels', customer_reply)
+        customer_reply = re.sub(r'(?i)you will receive (a |the |your )?(full |partial )?refund', 'any eligible amount will be returned through official channels', customer_reply)
+        customer_reply = re.sub(r'(?i)your account will be credited', 'our team will process your case through official channels', customer_reply)
+
+    if _has_time_commitment(customer_reply):
+        logger.warning("Safety: time commitment in customer_reply — scrubbing")
+        customer_reply = re.sub(
+            r'(?i)\bwithin \d+[\s\-]*(to[\s\-]*\d+\s*)?(hours?|days?|business days?|working days?)\b',
+            'as soon as possible',
+            customer_reply,
+        )
+        customer_reply = re.sub(
+            r'(?i)\b(by|before)\s+(tomorrow|end of day|eod|midnight)\b',
+            'through official channels',
+            customer_reply,
+        )
+        customer_reply = re.sub(
+            r'(?i)\bin the next \d+\s*(hours?|days?)\b',
+            'as soon as possible',
+            customer_reply,
+        )
 
     return customer_reply
 

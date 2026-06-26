@@ -33,7 +33,7 @@ class Provider:
         return AsyncOpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
-            timeout=22.0,
+            timeout=8.0,
             default_headers=headers,
         )
 

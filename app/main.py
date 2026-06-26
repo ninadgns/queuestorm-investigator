@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from .models import TicketRequest
+from .models import TicketRequest, TicketResponse
 from .analyzer import analyze_ticket
 
 logging.basicConfig(
@@ -51,8 +51,11 @@ async def analyze_ticket_endpoint(request: Request):
     if "complaint" not in body:
         return JSONResponse(status_code=400, content={"error": "Missing required field: complaint"})
 
-    if not body.get("complaint", "").strip():
+    complaint = body.get("complaint", "")
+    if not complaint.strip():
         return JSONResponse(status_code=422, content={"error": "Field 'complaint' must not be empty"})
+    if len(complaint) > 5000:
+        return JSONResponse(status_code=422, content={"error": "Field 'complaint' exceeds maximum length of 5000 characters"})
 
     # Parse and validate schema
     try:
@@ -66,7 +69,8 @@ async def analyze_ticket_endpoint(request: Request):
     # Run analysis
     try:
         result = await analyze_ticket(ticket_req)
-        return JSONResponse(status_code=200, content=result)
+        validated = TicketResponse.model_validate(result)
+        return JSONResponse(status_code=200, content=validated.model_dump())
     except Exception as exc:
         logger.exception("Unexpected error during ticket analysis")
         return JSONResponse(
