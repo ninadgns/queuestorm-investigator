@@ -20,7 +20,7 @@ relevant_transaction_id:
 - AMBIGUOUS RULE: if multiple transactions share the same amount on the same date and the complaint cannot identify which one (no counterparty info), set to null and use insufficient_data
 - Set to null when: no match, ambiguous, or no history
 
-CASE TYPE NOTE: Even when evidence is insufficient_data, still classify case_type based on what the customer claims. E.g., "I sent to the wrong person but they didn't receive it" → case_type=wrong_transfer even if you cannot identify which transaction.
+CASE TYPE NOTE: case_type is decided by WHAT THE CUSTOMER CLAIMS, never by which transaction statuses happen to appear in the history. Even when evidence is insufficient_data, still classify by the claim. E.g., "I sent to the wrong person but they didn't receive it" → case_type=wrong_transfer even if you cannot identify which transaction. A "failed" or "pending" row in the history does NOT make the case payment_failed unless the CUSTOMER is reporting that their own payment failed or their balance was deducted. "I sent money to X but they didn't get it" is wrong_transfer (recipient issue), not payment_failed — even if one of the candidate transfers shows status=failed.
 
 ## CASE TYPES (use exact strings)
 wrong_transfer | payment_failed | refund_request | duplicate_payment | merchant_settlement_delay | agent_cash_in_issue | phishing_or_social_engineering | other

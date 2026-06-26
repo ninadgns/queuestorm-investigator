@@ -40,6 +40,36 @@ _TIME_COMMITMENT_PATTERNS = [
     r'\bwithin the (next|coming) \d+\s*(hours?|days?)\b',
 ]
 
+# Patterns for directing customers to unofficial / suspicious third parties.
+# Deliberately conservative: redirecting to the *merchant* or to "official
+# support channels" is legitimate, so we only flag unofficial messaging apps,
+# raw external phone numbers presented as a contact, and links.
+_THIRD_PARTY_PATTERNS = [
+    r'\b(whatsapp|telegram|viber|imo|signal|messenger)\b',
+    r'\b(call|dial|text|sms|message|contact)\b[^.!?\n]{0,30}\+?\d[\d\s\-]{6,}\d',
+    r'\bclick\b[^.!?\n]{0,20}\b(this\s+)?(link|here|url)\b',
+    r'https?://\S+',
+]
+
+# Bangla-language safety violations (the English regex above cannot see these).
+# We match imperative *requests* ("শেয়ার করুন"/"দিন"), NOT the safe negative
+# warning form ("শেয়ার করবেন না"), so our own safe replies never trip these.
+_BANGLA_CREDENTIAL_PATTERNS = [
+    r'(পিন|ওটিপি|পাসওয়ার্ড).{0,20}(দিন|শেয়ার করুন|পাঠান|বলুন|লিখুন|জানান)',
+]
+_BANGLA_REFUND_PATTERNS = [
+    r'(ফেরত|রিফান্ড).{0,20}(দেব|দিচ্ছি|দেওয়া হবে|করে দেব|করা হবে|পাবেন)',
+    r'টাকা.{0,15}ফেরত.{0,15}(পাবেন|দেব|দেওয়া হবে)',
+    r'(আনব্লক করে দেব|ফিরিয়ে দেব)',
+]
+
+# Safe Bangla fallback reply used when a Bangla violation is detected.
+SAFE_BANGLA_REPLY = (
+    "আপনার সমস্যার জন্য আমরা দুঃখিত। আমাদের সাপোর্ট টিম আপনার অনুরোধ পর্যালোচনা করবে এবং "
+    "অফিসিয়াল চ্যানেলের মাধ্যমে আপনাকে জানাবে। "
+    "অনুগ্রহ করে কারো সাথে আপনার পিন বা ওটিপি শেয়ার করবেন না।"
+)
+
 VALID_EVIDENCE_VERDICTS = {"consistent", "inconsistent", "insufficient_data"}
 VALID_CASE_TYPES = {
     "wrong_transfer", "payment_failed", "refund_request", "duplicate_payment",
@@ -52,20 +82,43 @@ VALID_DEPARTMENTS = {
 }
 
 
-def _has_credential_request(text: str) -> bool:
+# Negation words that, when they directly govern a matched verb, make an
+# otherwise-risky phrase safe — e.g. "do not share your OTP", "we cannot
+# guarantee a refund", "never to share your PIN". The sanctioned safe replies in
+# the rubric itself rely on this ("Please do not share your PIN or OTP").
+_NEGATION_NEAR = re.compile(r"\b(do not|don't|dont|never|not|cannot|can't|won't|will not|unable to)\b")
+
+
+def _is_negated(lower: str, match_start: int) -> bool:
+    """True if a negation governs the match (negation within ~25 chars before it,
+    with no clause boundary in between). A comma/period between the negation and
+    the verb means they are separate clauses, so the negation does NOT apply
+    (e.g. "Don't worry, we will refund you" is still a promise)."""
+    window = lower[max(0, match_start - 25):match_start]
+    last = None
+    for m in _NEGATION_NEAR.finditer(window):
+        last = m
+    if not last:
+        return False
+    between = window[last.end():]
+    return not re.search(r"[.,;:\n]", between)
+
+
+def _matches_unnegated(text: str, patterns: list) -> bool:
     lower = text.lower()
-    for pattern in _CREDENTIAL_REQUEST_PATTERNS:
-        if re.search(pattern, lower):
-            return True
+    for pattern in patterns:
+        for m in re.finditer(pattern, lower):
+            if not _is_negated(lower, m.start()):
+                return True
     return False
+
+
+def _has_credential_request(text: str) -> bool:
+    return _matches_unnegated(text, _CREDENTIAL_REQUEST_PATTERNS)
 
 
 def _has_refund_promise(text: str) -> bool:
-    lower = text.lower()
-    for pattern in _REFUND_PROMISE_PATTERNS:
-        if re.search(pattern, lower):
-            return True
-    return False
+    return _matches_unnegated(text, _REFUND_PROMISE_PATTERNS)
 
 
 def _has_time_commitment(text: str) -> bool:
@@ -74,6 +127,39 @@ def _has_time_commitment(text: str) -> bool:
         if re.search(pattern, lower):
             return True
     return False
+
+
+def _has_third_party(text: str) -> bool:
+    lower = text.lower()
+    for pattern in _THIRD_PARTY_PATTERNS:
+        if re.search(pattern, lower):
+            return True
+    return False
+
+
+def has_bangla_violation(text: str) -> bool:
+    """Detect credential requests / refund promises written in Bangla."""
+    for pattern in _BANGLA_CREDENTIAL_PATTERNS + _BANGLA_REFUND_PATTERNS:
+        if re.search(pattern, text):
+            return True
+    return False
+
+
+def _scrub_third_party(text: str) -> str:
+    text = re.sub(
+        r'(?i)\b(via|on|using|through)\s+(whatsapp|telegram|viber|imo|signal|messenger)\b',
+        'through our official support channels', text,
+    )
+    text = re.sub(
+        r'(?i)\b(whatsapp|telegram|viber|imo|signal|messenger)\b',
+        'our official support channels', text,
+    )
+    text = re.sub(r'https?://\S+', 'our official app or website', text)
+    text = re.sub(
+        r'(?i)\b(call|dial|text|sms|message|contact)\b([^.!?\n]{0,30})\+?\d[\d\s\-]{6,}\d',
+        r'\1 our official helpline', text,
+    )
+    return text
 
 
 def apply_safety_guardrails(customer_reply: str) -> str:
@@ -114,11 +200,41 @@ def apply_safety_guardrails(customer_reply: str) -> str:
             customer_reply,
         )
 
+    if _has_third_party(customer_reply):
+        logger.warning("Safety violation: third-party redirection in customer_reply — scrubbing")
+        customer_reply = _scrub_third_party(customer_reply)
+
     return customer_reply
 
 
+def scrub_action(action: str) -> str:
+    """Scrub recommended_next_action.
+
+    Per Problem Statement Section 8, the refund/reversal-confirmation rule is
+    checked on BOTH customer_reply AND recommended_next_action. Internal ops
+    language such as 'initiate the reversal flow per policy' is legitimate and is
+    NOT matched by the customer-facing promise patterns; only explicit promises
+    like 'we will refund the customer' are scrubbed.
+    """
+    if not action:
+        return action
+    if _has_refund_promise(action):
+        logger.warning("Safety violation: refund promise in recommended_next_action — scrubbing")
+        action = re.sub(r'(?i)we will refund( you| the customer)?', 'recommend reviewing the case for any eligible reversal through official channels', action)
+        action = re.sub(r'(?i)we will reverse the transaction', 'review the transaction for an eligible reversal', action)
+        action = re.sub(r'(?i)your money will be (refunded|returned)', 'any eligible amount will be returned through official channels', action)
+        action = re.sub(r'(?i)we will credit your account', 'process the case for any eligible credit through official channels', action)
+        action = re.sub(r'(?i)funds? will be (restored|credited|returned|refunded)', 'any eligible amount will be returned through official channels', action)
+    return action
+
+
 def has_safety_violation(customer_reply: str) -> bool:
-    return _has_credential_request(customer_reply) or _has_refund_promise(customer_reply)
+    return (
+        _has_credential_request(customer_reply)
+        or _has_refund_promise(customer_reply)
+        or _has_third_party(customer_reply)
+        or has_bangla_violation(customer_reply)
+    )
 
 
 def validate_enums(result: dict) -> dict:

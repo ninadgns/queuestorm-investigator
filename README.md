@@ -111,6 +111,16 @@ Provider cascade — first available key wins:
 
 No local models or GPU required.
 
+## Cost Reasoning
+
+The system is designed to be **cost-aware and free-capable**:
+
+- **$0 floor.** No API key is strictly required to stay up — if every provider is unavailable, the deterministic rule-based fallback returns a valid, safe response at zero cost. An LLM is used for quality, not survival.
+- **One LLM call per request.** The provider cascade only advances to the next provider on failure, so the normal path is a single call (`temperature=0.1`, `max_tokens=1536`). No retries, no multi-pass chains.
+- **Lean token budget.** System prompt (~700 tokens) + ticket/transaction context (~200–400 tokens) + output (~200–350 tokens) ≈ **1.2–1.5K tokens/request**. On DeepSeek (`deepseek-chat`), that is well under **$0.001 per request** at current pricing (~$0.27/1M input, ~$1.10/1M output) — roughly **$1 per ~1,000–2,000 tickets**.
+- **Free tertiary tier.** OpenRouter's free model slot is the zero-marginal-cost backstop before the rule-based fallback.
+- **No GPU, no local weights, no runtime downloads** — keeps the Docker image small (<500 MB) and avoids any per-run infrastructure cost. Provider order (DeepSeek → DeepInfra → OpenRouter) is chosen for cost-efficiency first, then JSON reliability.
+
 ## AI Approach
 
 **Multi-provider hybrid:**
@@ -137,6 +147,16 @@ Three hard safety rules are enforced at two layers:
 - Regex patterns scan `customer_reply` for credential request phrases and unauthorized promise phrases
 - Violations are scrubbed and replaced with safe language
 - Enum values are validated and corrected to prevent schema violations
+
+## Assumptions
+
+- **Synthetic data only.** All complaints and transaction histories are simulated; no real customer or payment data is processed, and no real payment APIs are integrated.
+- **Transaction history is trusted as-is.** The provided `transaction_history` is assumed accurate and complete; the service investigates against it but does not call any external ledger.
+- **Amounts are in BDT** and timestamps are ISO 8601, per the problem statement schema.
+- **`language` is a hint, not a guarantee.** If absent, language is auto-detected from the complaint text (Bangla Unicode block detection); the response `customer_reply` mirrors the resolved language.
+- **At least one provider key is expected for best quality**, but the service runs correctly with none (rule-based fallback). Keys are supplied via environment variables only.
+- **One ticket per request**, within a 30-second budget; the normal path makes a single LLM call.
+- **Escalation is policy-driven, not model-driven.** `human_review_required` and the safety scrubbing are computed deterministically in code, so they hold even if the LLM output is imperfect or adversarial.
 
 ## Known Limitations
 
