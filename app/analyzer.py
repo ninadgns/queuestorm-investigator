@@ -186,20 +186,29 @@ async def call_llm(user_msg: str) -> dict:
     raise RuntimeError(f"All LLM providers failed. Last error: {last_error}")
 
 
-def enforce_review_rules(result: dict) -> dict:
-    """Post-processing: enforce human_review_required based on case type and verdict."""
+_DEMAND_WORDS = {"confirm", "today", "now", "immediately", "urgent", "urgently", "guarantee", "promise", "must", "right now", "asap"}
+
+
+def enforce_review_rules(result: dict, complaint: str = "") -> dict:
+    """Post-processing: enforce human_review_required based on case type, verdict, and complaint tone."""
     case_type = result.get("case_type", "")
     evidence_verdict = result.get("evidence_verdict", "")
     severity = result.get("severity", "")
+    complaint_lower = complaint.lower()
 
     must_review = (
         case_type in {"wrong_transfer", "duplicate_payment", "agent_cash_in_issue", "phishing_or_social_engineering"}
-        or evidence_verdict == "insufficient_data"
+        or evidence_verdict in {"insufficient_data", "inconsistent"}
         or severity == "critical"
+        or (case_type == "refund_request" and any(w in complaint_lower for w in _DEMAND_WORDS))
     )
     if must_review:
         result["human_review_required"] = True
     return result
+
+
+def _is_bangla(text: str) -> bool:
+    return sum(1 for c in text if "ঀ" <= c <= "৿") > 5
 
 
 async def analyze_ticket(req: TicketRequest) -> dict:
@@ -213,10 +222,23 @@ async def analyze_ticket(req: TicketRequest) -> dict:
 
     result["ticket_id"] = req.ticket_id
     result = validate_enums(result)
-    result = enforce_review_rules(result)
+    result = enforce_review_rules(result, req.complaint or "")
+
+    # Cap confidence when evidence is insufficient
+    if result.get("evidence_verdict") == "insufficient_data":
+        result["confidence"] = min(result.get("confidence", 0.5), 0.6)
 
     if "customer_reply" in result:
         result["customer_reply"] = apply_safety_guardrails(result["customer_reply"])
+
+    # Fix language mismatch: if expected English but reply came back in Bangla, replace it
+    expected_lang = req.language or detect_language(req.complaint or "")
+    if expected_lang != "bn" and _is_bangla(result.get("customer_reply", "")):
+        result["customer_reply"] = (
+            "We have received your report and our team will investigate. "
+            "Please do not share your PIN or OTP with anyone. "
+            "We will contact you through official channels."
+        )
 
     result.setdefault("relevant_transaction_id", None)
     result.setdefault("human_review_required", True)
